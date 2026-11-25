@@ -87,6 +87,17 @@
                 android:text="@string/zenix_install_apk" />
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnInstallMicroG"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:textSize="11sp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/zenix_install_microg" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnShareLog"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="wrap_content"

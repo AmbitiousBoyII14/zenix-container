@@ -78,6 +78,7 @@ class ZenixActivity : BaseActivity(), ZenixLog.Listener {
         viewBinding.btnSelfTest.setOnClickListener { runSelfTest() }
         viewBinding.btnCreateSpace.setOnClickListener { promptCreateSpace() }
         viewBinding.btnInstallApk.setOnClickListener { userInstallApk(BlackBoxCore.getHostUserId()) }
+        viewBinding.btnInstallMicroG.setOnClickListener { confirmStackInstall(BlackBoxCore.getHostUserId()) }
         viewBinding.btnShareLog.setOnClickListener { shareLog() }
         viewBinding.btnCopyLog.setOnClickListener { copyLog() }
         viewBinding.btnClearLog.setOnClickListener {
@@ -94,6 +95,37 @@ class ZenixActivity : BaseActivity(), ZenixLog.Listener {
                 + " lines=" + ZenixLog.lineCount())
         refreshStatus()
         refreshSpaces()
+        stagePayloadInBackground()
+    }
+
+    /**
+     * Stage the bundled microG payload on launch, on a worker thread (108 MB
+     * copy). Without this, status/self-test/new-space all report MISSING on
+     * first run because materialize() only ran inside installMicroG().
+     */
+    private fun stagePayloadInBackground() {
+        if (ZenixPayload.isReady(this)) {
+            ZenixLog.i("PAYLOAD", "already staged, skipping launch copy")
+            return
+        }
+        val inAssets = ZenixPayload.assetsAvailable(this)
+        if (inAssets.isEmpty()) {
+            ZenixLog.e("PAYLOAD", "no payload assets in this APK -- install the 108 MB release build")
+            return
+        }
+        ZenixLog.i("PAYLOAD", "staging ${inAssets.size} file(s) from APK assets in background")
+        Thread({
+            try {
+                val copied = ZenixPayload.materialize(applicationContext)
+                runOnUiThread {
+                    ZenixLog.i("PAYLOAD", "launch staging done, copied=$copied")
+                    refreshStatus()
+                    refreshSpaces()
+                }
+            } catch (tr: Throwable) {
+                ZenixLog.fault("PAYLOAD", "launch staging threw", tr)
+            }
+        }, "zenix-stage").start()
     }
 
     override fun onDestroy() {
@@ -202,22 +234,25 @@ class ZenixActivity : BaseActivity(), ZenixLog.Listener {
             title(text = "microG -> space $userId")
             message(res = note)
             positiveButton(res = R.string.zenix_install) {
-                runStackInstall(userId)
+                // Reinstalling a stack that already verifies as complete means
+                // force: wipe the (broken) copies first, or the install skips
+                // every package and changes nothing.
+                runStackInstall(userId, force = installed)
             }
             negativeButton(res = android.R.string.cancel)
         }
     }
 
-    private fun runStackInstall(userId: Int) {
+    private fun runStackInstall(userId: Int, force: Boolean = false) {
         if (busy) return
         busy = true
         viewBinding.btnSelfTest.isEnabled = false
-        ZenixLog.i("MICROG", "queued: space=$userId")
+        ZenixLog.i("MICROG", "queued: space=$userId force=$force")
         // Worker thread: installs copy up to ~100 MB and must never touch the
         // main thread. ZenixLog is already thread safe and coalesces UI posts.
         Thread({
             try {
-                val ok = ZenixSpaceManager.installMicroG(applicationContext, userId)
+                val ok = ZenixSpaceManager.installMicroG(applicationContext, userId, force)
                 runOnUiThread {
                     busy = false
                     viewBinding.btnSelfTest.isEnabled = true
@@ -324,6 +359,8 @@ class ZenixActivity : BaseActivity(), ZenixLog.Listener {
             copyLog()
             return
         }
+        // Try file share first; if FileProvider rejects the path (it did on
+        // device with StringIndexOutOfBounds), share the text directly.
         try {
             val uri = FileProvider.getUriForFile(this, "$packageName.zenix.fileprovider", file)
             val intent = Intent(Intent.ACTION_SEND).apply {
@@ -333,8 +370,24 @@ class ZenixActivity : BaseActivity(), ZenixLog.Listener {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             startActivity(Intent.createChooser(intent, getString(R.string.zenix_share_log)))
+            return
         } catch (tr: Throwable) {
-            ZenixLog.fault("CONSOLE", "share failed, falling back to clipboard", tr)
+            ZenixLog.fault("CONSOLE", "file share failed, sharing text instead", tr)
+        }
+        try {
+            val text = ZenixLog.dump()
+            if (text.isBlank()) {
+                copyLog()
+                return
+            }
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+                putExtra(Intent.EXTRA_SUBJECT, "Zenix session log")
+            }
+            startActivity(Intent.createChooser(intent, getString(R.string.zenix_share_log)))
+        } catch (tr: Throwable) {
+            ZenixLog.fault("CONSOLE", "text share failed, falling back to clipboard", tr)
             copyLog()
         }
     }

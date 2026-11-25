@@ -5,7 +5,48 @@ Dual spaces + microG + live debugger, built on the BlackBox virtual engine
 `ZiTanIOI/BlackBox`.
 
 Package: `top.niunaijun.blackboxa64` (arm64) / `top.niunaijun.blackboxa32` (arm32)
-Version: `2.3.1-zenix.1` (versionCode 17)
+Version: `2.3.1-zenix.2` (versionCode 18)
+
+---
+
+## Fixes in v2.3.1-zenix.2 (first-device field bugs)
+
+Real-device testing of `-zenix.1` exposed four problems. All fixed here:
+
+1. **Payload reported MISSING on first launch / self-test.**
+   `materialize()` (assets -> `filesDir/zenix_payload/`) only ever ran inside
+   `installMicroG()`, so until a stack install was attempted the status bar,
+   self test and new-space all read `payload: MISSING`. Now the screen stages
+   the bundled payload in a background thread on launch
+   (`ZenixActivity.stagePayloadInBackground()`), then re-reads status. The
+   self test now also distinguishes *in-APK-but-not-staged* from
+   *wrong-APK-no-asset-at-all* (`ZenixPayload.assetsAvailable()`), and
+   `assetSize()` uses `AssetFileDescriptor.getLength()` instead of the
+   unreliable `InputStream.available()`.
+
+2. **"Installed" claimed success with no APKs, and Reinstall was a no-op.**
+   The old loop `return false`'d on the first failed file, so one bad file
+   silently left the rest uninstalled while the button still fired. The loop
+   now records per-file failures, installs what it can, and only reports
+   success when all three packages re-verify (`status(userId).complete()`).
+   `installMicroG()` gained a `force` flag that uninstalls the three packages
+   from the space first; the Reinstall path uses it, so an already-"installed"
+   (but broken) stack is actually wiped and reinstalled instead of skipped.
+
+3. **Share log crashed** (`StringIndexOutOfBoundsException` in the
+   FileProvider path). `shareLog()` now falls back to sharing the log text
+   directly (`ACTION_SEND` + `EXTRA_TEXT`) when the file-provider URI fails,
+   and to the clipboard as a last resort.
+
+4. **Space-row buttons were unreadable** (dark text on dark card). Fixed with
+   explicit white text + white stroke in `item_zenix_space.xml`, and an
+   `Install microG` button was added to the top action row so the stack can be
+   installed into space 0 without opening a per-space button.
+
+Note on *guest apps that need Play/ pairing crashing*: with a de-Googled host
+there is no real Google signature to spoof, so Play Integrity / account
+pairing inside the container will not pass. That is a hard limit of the
+container, not a bug — microG makes *most* GMS APIs work, but not attestation.
 
 ---
 

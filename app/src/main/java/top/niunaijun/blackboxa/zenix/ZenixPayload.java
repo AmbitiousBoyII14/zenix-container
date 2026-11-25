@@ -63,50 +63,79 @@ public final class ZenixPayload {
     }
 
     /**
+     * What the build actually shipped in assets, regardless of whether it has
+     * been staged to filesDir yet. Distinguishes "wrong APK installed" (no
+     * assets) from "right APK, payload not staged yet" (assets present, files
+     * missing) -- the two cases need opposite fixes.
+     */
+    public static List<String> assetsAvailable(Context context) {
+        List<String> available = new ArrayList<>();
+        String[] assets = listAssets(context);
+        if (assets == null) {
+            return available;
+        }
+        for (String name : FILES) {
+            if (contains(assets, name)) {
+                available.add(name);
+            }
+        }
+        return available;
+    }
+
+    /**
      * Copy whatever payload the build shipped into the private dir.
      *
      * @return number of files (re)copied; -1 when the build shipped no assets.
      */
+    /**
+     * Serialize concurrent staging (launch background thread + a user who
+     * taps Install microG mid-copy): the copy is not atomic, so a second
+     * writer interleaving bytes would corrupt the staged APK.
+     */
+    private static final Object STAGE_LOCK = new Object();
+
     public static int materialize(Context context) {
-        File dir = payloadDir(context);
-        if (!dir.exists() && !dir.mkdirs()) {
-            ZenixLog.e("PAYLOAD", "cannot create payload dir " + dir.getAbsolutePath());
-            return -1;
-        }
+        synchronized (STAGE_LOCK) {
+            File dir = payloadDir(context);
+            if (!dir.exists() && !dir.mkdirs()) {
+                ZenixLog.e("PAYLOAD", "cannot create payload dir " + dir.getAbsolutePath());
+                return -1;
+            }
 
-        String[] assets = listAssets(context);
-        if (assets == null || assets.length == 0) {
-            ZenixLog.w("PAYLOAD", "build shipped no assets/" + DIR
-                    + " -- payload must be installed from file");
-            return -1;
-        }
+            String[] assets = listAssets(context);
+            if (assets == null || assets.length == 0) {
+                ZenixLog.w("PAYLOAD", "build shipped no assets/" + DIR
+                        + " -- payload must be installed from file");
+                return -1;
+            }
 
-        int copied = 0;
-        List<String> notShipped = new ArrayList<>();
-        for (String name : FILES) {
-            if (!contains(assets, name)) {
-                // Placeholder files (README) can live in the assets dir without
-                // being mistaken for payload; missing payload is reported once.
-                notShipped.add(name);
-                continue;
+            int copied = 0;
+            List<String> notShipped = new ArrayList<>();
+            for (String name : FILES) {
+                if (!contains(assets, name)) {
+                    // Placeholder files (README) can live in the assets dir without
+                    // being mistaken for payload; missing payload is reported once.
+                    notShipped.add(name);
+                    continue;
+                }
+                File target = new File(dir, name);
+                long assetSize = assetSize(context, DIR + "/" + name);
+                if (target.isFile() && assetSize > 0 && target.length() == assetSize) {
+                    ZenixLog.v("PAYLOAD", name + " present, " + assetSize + " B, skipped");
+                    continue;
+                }
+                if (copyAsset(context, DIR + "/" + name, target)) {
+                    copied++;
+                    ZenixLog.i("PAYLOAD", name + " staged, " + target.length() + " B");
+                }
             }
-            File target = new File(dir, name);
-            long assetSize = assetSize(context, DIR + "/" + name);
-            if (target.isFile() && assetSize > 0 && target.length() == assetSize) {
-                ZenixLog.v("PAYLOAD", name + " present, " + assetSize + " B, skipped");
-                continue;
+            if (!notShipped.isEmpty()) {
+                ZenixLog.e("PAYLOAD", "build did not ship " + notShipped
+                        + " -- run tools/fetch-microg.sh before building");
             }
-            if (copyAsset(context, DIR + "/" + name, target)) {
-                copied++;
-                ZenixLog.i("PAYLOAD", name + " staged, " + target.length() + " B");
-            }
+            ZenixLog.i("PAYLOAD", "staged " + copied + " file(s) in " + dir.getAbsolutePath());
+            return copied;
         }
-        if (!notShipped.isEmpty()) {
-            ZenixLog.e("PAYLOAD", "build did not ship " + notShipped
-                    + " -- run tools/fetch-microg.sh before building");
-        }
-        ZenixLog.i("PAYLOAD", "staged " + copied + " file(s) in " + dir.getAbsolutePath());
-        return copied;
     }
 
     private static boolean contains(String[] names, String name) {
@@ -128,6 +157,23 @@ public final class ZenixPayload {
     }
 
     private static long assetSize(Context context, String path) {
+        // InputStream.available() is unreliable for assets (it reports remaining
+        // bytes, and for compressed entries it can be wrong). Prefer the
+        // AssetFileDescriptor length, which is the real file size.
+        try {
+            android.content.res.AssetFileDescriptor fd =
+                    context.getAssets().openFd(path);
+            try {
+                long length = fd.getLength();
+                if (length >= 0) {
+                    return length;
+                }
+            } finally {
+                fd.close();
+            }
+        } catch (IOException ignored) {
+            // fall through to stream probe
+        }
         try {
             InputStream stream = context.getAssets().open(path);
             try {

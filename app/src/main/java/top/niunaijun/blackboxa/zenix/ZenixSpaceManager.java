@@ -173,7 +173,32 @@ public final class ZenixSpaceManager {
      * @return true only when all three packages verify as installed.
      */
     public static boolean installMicroG(Context fromContext, int userId) {
-        ZenixLog.i("MICROG", "install start: space=" + userId + " stack=" + STACK_NAME);
+        return installMicroG(fromContext, userId, false);
+    }
+
+    /**
+     * @param force when true, uninstalls any existing (possibly broken) copies
+     *              of the three packages first, then reinstalls all of them.
+     *              Without this, an "installed" package is skipped forever --
+     *              which makes Reinstall a no-op for a broken stack.
+     */
+    public static boolean installMicroG(Context fromContext, int userId, boolean force) {
+        ZenixLog.i("MICROG", "install start: space=" + userId + " stack=" + STACK_NAME
+                + " force=" + force);
+
+        if (force) {
+            for (String pkg : new String[]{PKG_GMS, PKG_GSF, PKG_VENDING}) {
+                if (isInstalled(pkg, userId)) {
+                    ZenixLog.i("MICROG", "force: uninstalling existing " + pkg + " from space "
+                            + userId);
+                    try {
+                        BlackBoxCore.get().uninstallPackageAsUser(pkg, userId);
+                    } catch (Throwable tr) {
+                        ZenixLog.fault("MICROG", "force-uninstall " + pkg + " threw", tr);
+                    }
+                }
+            }
+        }
 
         ZenixPayload.materialize(fromContext);
         File dir = ZenixPayload.payloadDir(fromContext);
@@ -184,6 +209,7 @@ public final class ZenixSpaceManager {
             return false;
         }
 
+        List<String> failures = new ArrayList<>();
         for (int index = 0; index < ZenixPayload.FILES.length; index++) {
             String fileName = ZenixPayload.FILES[index];
             String expectedPackage = ZenixPayload.PACKAGES[index];
@@ -195,14 +221,16 @@ public final class ZenixSpaceManager {
             File apk = new File(dir, fileName);
             if (!apk.isFile() || apk.length() == 0) {
                 ZenixLog.e("MICROG", fileName + " missing at " + apk.getAbsolutePath());
-                return false;
+                failures.add(fileName + " (missing)");
+                continue;
             }
             // ABI gate before the copy: Bcore would reject this later anyway, but
             // only after pushing ~100 MB through its parser. Decline by name now.
             String abiDecline = abiDecline(apk, BlackBoxCore.is64Bit());
             if (abiDecline != null) {
                 ZenixLog.e("MICROG", fileName + " DECLINED: " + abiDecline);
-                return false;
+                failures.add(fileName + " (abi)");
+                continue;
             }
             long start = System.currentTimeMillis();
             InstallResult result;
@@ -210,13 +238,15 @@ public final class ZenixSpaceManager {
                 result = BlackBoxCore.get().installPackageAsUser(apk, userId);
             } catch (Throwable tr) {
                 ZenixLog.fault("MICROG", "install " + fileName + " threw", tr);
-                return false;
+                failures.add(fileName + " (threw)");
+                continue;
             }
             long took = System.currentTimeMillis() - start;
             if (result == null || !result.success) {
                 ZenixLog.e("MICROG", fileName + " FAILED in " + took + "ms :: "
                         + (result == null ? "null result" : result.msg));
-                return false;
+                failures.add(fileName + " (" + (result == null ? "null" : result.msg) + ")");
+                continue;
             }
             ZenixLog.i("MICROG", fileName + " installed as " + result.packageName
                     + " in " + took + "ms");
@@ -224,6 +254,10 @@ public final class ZenixSpaceManager {
                 ZenixLog.w("MICROG", "expected " + expectedPackage + " but APK declares "
                         + result.packageName + " -- payload file is the wrong flavour");
             }
+        }
+        if (!failures.isEmpty()) {
+            ZenixLog.e("MICROG", "install finished with failures: " + failures
+                    + " -- continuing to verify what did install");
         }
 
         StackStatus status = status(userId);
@@ -299,12 +333,18 @@ public final class ZenixSpaceManager {
         report.add("spaces: " + spaces().size());
 
         List<String> missing = ZenixPayload.missingFiles(context);
+        List<String> inAssets = ZenixPayload.assetsAvailable(context);
         if (missing.isEmpty()) {
             report.add("payload: staged (" + ZenixPayload.FILES.length + " apk)");
             ZenixLog.i("TEST", "payload staged, files=" + ZenixPayload.FILES.length);
+        } else if (!inAssets.isEmpty()) {
+            report.add("payload: in APK (" + inAssets.size() + " file(s)) but NOT staged yet");
+            report.add("  -> tap Install microG, staging runs automatically");
+            ZenixLog.w("TEST", "payload in assets " + inAssets + " but not staged, missing " + missing);
         } else {
-            report.add("payload: MISSING " + missing);
-            ZenixLog.w("TEST", "payload missing " + missing);
+            report.add("payload: MISSING " + missing + " (not in this APK either)");
+            report.add("  -> wrong APK: install the 108 MB release build");
+            ZenixLog.w("TEST", "payload missing " + missing + " and no assets shipped");
         }
         report.add("payload dir: " + ZenixPayload.payloadDir(context).getAbsolutePath());
 
@@ -345,8 +385,10 @@ public final class ZenixSpaceManager {
         ZenixLog.i("TEST", "space 0 guest apps=" + appCount);
 
         Set<String> uniqueMissing = new LinkedHashSet<>(missing);
-        if (!uniqueMissing.isEmpty()) {
-            report.add("verdict: UNTESTED -- stage the payload first");
+        if (!uniqueMissing.isEmpty() && !inAssets.isEmpty()) {
+            report.add("verdict: UNTESTED -- payload is in the APK, tap Install microG to stage it");
+        } else if (!uniqueMissing.isEmpty()) {
+            report.add("verdict: UNTESTED -- this APK shipped without the payload");
         } else {
             report.add("verdict: container IO OK");
         }
