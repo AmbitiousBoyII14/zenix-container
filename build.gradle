@@ -1,0 +1,56 @@
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+buildscript {
+    ext.kotlin_version = "1.4.31"
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+//        maven { url 'https://dl.bintray.com/umsdk/release' }
+    }
+    dependencies {
+        classpath "com.android.tools.build:gradle:4.0.1"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+// Zenix: pin one NDK for every module. AGP 4.0.1 defaults to 21.0.6113669, which is
+// frequently missing; 21.4.7075529 (r21e LTS) is what the toolchain ships here.
+subprojects { p ->
+    p.afterEvaluate {
+        if (p.plugins.hasPlugin('com.android.library') || p.plugins.hasPlugin('com.android.application')) {
+            p.android.ndkVersion = "21.4.7075529"
+        }
+    }
+}
+
+allprojects {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+//        maven { url 'https://dl.bintray.com/umsdk/release' }
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
+
+
+ext {
+    compileSdkVersion = 30
+    buildToolsVersion = "28.0.2"
+    targetSdkVersion = 30
+
+    versionName = '1.0'
+    versionCode = 1
+
+    xVersion = '1.1.0'
+    blackReflection = '1.1.2'
+}
